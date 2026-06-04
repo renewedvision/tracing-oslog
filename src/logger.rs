@@ -118,8 +118,7 @@ where
 					"{}({})",
 					function_name,
 					attributes
-						.public
-						.into_iter()
+						.iter_public()
 						.map(|(k, v)| format!("{}: {}", k, v))
 						.collect::<Vec<_>>()
 						.join(", ")
@@ -153,25 +152,24 @@ where
 		}
 		message.push_str(
 			&attributes
-				.public
-				.into_iter()
+				.iter_public()
 				.map(|(k, v)| format!("{}={}", k, v))
 				.collect::<Vec<_>>()
 				.join(" "),
 		);
 		message.retain(|c| c != '\0');
-		let has_private = !attributes.private.is_empty();
-		let private_message = if has_private {
+		let private_message = {
 			let mut s = attributes
-				.private
-				.into_iter()
+				.iter_private()
 				.map(|(k, v)| format!("{}={}", k, v))
 				.collect::<Vec<_>>()
 				.join(" ");
-			s.retain(|c| c != '\0');
-			Some(CString::new(s).expect("failed to convert private message to a C string"))
-		} else {
-			None
+			if s.is_empty() {
+				None
+			} else {
+				s.retain(|c| c != '\0');
+				Some(CString::new(s).expect("failed to convert private message to a C string"))
+			}
 		};
 		let message =
 			CString::new(message).expect("failed to convert formatted message to a C string");

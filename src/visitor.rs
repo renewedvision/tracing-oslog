@@ -5,14 +5,24 @@ use crate::private::PRIVATE_SENTINEL;
 
 #[derive(Default)]
 pub struct AttributeMap {
-	pub public: BTreeMap<String, String>,
-	pub private: BTreeMap<String, String>,
+	public: BTreeMap<String, String>,
+	private: BTreeMap<String, String>,
 }
 
 impl AttributeMap {
 	/// Takes the message attribute, if available.
 	pub fn take_message(&mut self) -> Option<String> {
 		self.public.remove("message")
+	}
+
+	/// Returns an iterator over public key-value pairs.
+	pub fn iter_public(&self) -> impl Iterator<Item = (&str, &str)> {
+		self.public.iter().map(|(k, v)| (k.as_str(), v.as_str()))
+	}
+
+	/// Returns an iterator over private key-value pairs.
+	pub fn iter_private(&self) -> impl Iterator<Item = (&str, &str)> {
+		self.private.iter().map(|(k, v)| (k.as_str(), v.as_str()))
 	}
 }
 
