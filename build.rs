@@ -2,6 +2,7 @@ use std::env;
 
 fn main() {
 	println!("cargo:rerun-if-changed=build.rs"); // Enable change-tracking
+	println!("cargo::rustc-check-cfg=cfg(tracing_unstable)");
 
 	if std::env::var("DOCS_RS").is_ok() {
 		// docs.rs doesn't have the required Xcode header files, so skip

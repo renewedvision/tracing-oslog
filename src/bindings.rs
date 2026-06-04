@@ -153,5 +153,13 @@ extern "C" {
 	);
 }
 extern "C" {
+	pub fn wrapped_os_log_with_type_private(
+		log: os_log_t,
+		type_: os_log_type_t,
+		public_message: *const ::std::os::raw::c_char,
+		private_message: *const ::std::os::raw::c_char,
+	);
+}
+extern "C" {
 	pub fn wrapped_os_log_default() -> os_log_t;
 }

@@ -5,6 +5,11 @@
 	clippy::style,
 	clippy::suspicious
 )]
+#[cfg(feature = "valuable")]
+mod private;
+#[cfg(feature = "valuable")]
+pub use private::Private;
+
 cfg_if::cfg_if! {
 	if #[cfg(target_vendor = "apple")] {
 		#[allow(

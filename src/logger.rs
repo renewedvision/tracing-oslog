@@ -6,7 +6,7 @@ use crate::{
 		os_activity_t, os_log_create, os_log_t, os_log_type_t, os_log_type_t_OS_LOG_TYPE_DEBUG,
 		os_log_type_t_OS_LOG_TYPE_DEFAULT, os_log_type_t_OS_LOG_TYPE_ERROR,
 		os_log_type_t_OS_LOG_TYPE_FAULT, os_log_type_t_OS_LOG_TYPE_INFO, os_release,
-		wrapped_os_log_default, wrapped_os_log_with_type,
+		wrapped_os_log_default, wrapped_os_log_with_type, wrapped_os_log_with_type_private,
 	},
 	visitor::{AttributeMap, FieldVisitor},
 };
@@ -118,6 +118,7 @@ where
 					"{}({})",
 					function_name,
 					attributes
+						.public
 						.into_iter()
 						.map(|(k, v)| format!("{}: {}", k, v))
 						.collect::<Vec<_>>()
@@ -146,18 +147,32 @@ where
 		let mut attr_visitor = FieldVisitor::new(&mut attributes);
 		event.record(&mut attr_visitor);
 		let mut message = String::new();
-		if let Some(value) = attributes.remove("message") {
+		if let Some(value) = attributes.take_message() {
 			message = value;
 			message.push_str("  ");
 		}
 		message.push_str(
 			&attributes
+				.public
 				.into_iter()
 				.map(|(k, v)| format!("{}={}", k, v))
 				.collect::<Vec<_>>()
 				.join(" "),
 		);
 		message.retain(|c| c != '\0');
+		let has_private = !attributes.private.is_empty();
+		let private_message = if has_private {
+			let mut s = attributes
+				.private
+				.into_iter()
+				.map(|(k, v)| format!("{}={}", k, v))
+				.collect::<Vec<_>>()
+				.join(" ");
+			s.retain(|c| c != '\0');
+			Some(CString::new(s).expect("failed to convert private message to a C string"))
+		} else {
+			None
+		};
 		let message =
 			CString::new(message).expect("failed to convert formatted message to a C string");
 		if let Some(parent_id) = ctx.current_span().id() {
@@ -174,9 +189,27 @@ where
 				let state: os_activity_scope_state_s = std::mem::transmute(raw_state);
 				let state: os_activity_scope_state_t = &state as *const _ as *mut _;
 				os_activity_scope_enter(**activity, state);
-				wrapped_os_log_with_type(self.logger, level, message.as_ptr());
+				if let Some(ref private) = private_message {
+					wrapped_os_log_with_type_private(
+						self.logger,
+						level,
+						message.as_ptr(),
+						private.as_ptr(),
+					);
+				} else {
+					wrapped_os_log_with_type(self.logger, level, message.as_ptr());
+				}
 				os_activity_scope_leave(state);
 			}
+		} else if let Some(ref private) = private_message {
+			unsafe {
+				wrapped_os_log_with_type_private(
+					self.logger,
+					level,
+					message.as_ptr(),
+					private.as_ptr(),
+				)
+			};
 		} else {
 			unsafe { wrapped_os_log_with_type(self.logger, level, message.as_ptr()) };
 		}
