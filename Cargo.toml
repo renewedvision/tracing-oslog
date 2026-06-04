@@ -12,9 +12,6 @@ documentation = "https://docs.rs/tracing-oslog"
 # Keep up to date with version in ./create_bindings.sh
 rust-version = "1.77"
 
-[features]
-default = []
-
 [dependencies]
 tracing-subscriber = { version = "0.3", default-features = false, features = ["std", "registry"] }
 cfg-if = "1.0"
@@ -31,4 +28,3 @@ cc = "1.0"
 
 [package.metadata.docs.rs]
 targets = ["aarch64-apple-darwin", "x86_64-apple-darwin", "aarch64-apple-ios"]
-rustdoc-args = ["--cfg", "tracing_unstable"]
