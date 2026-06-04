@@ -45,18 +45,3 @@ impl<T: Valuable> Structable for Private<T> {
 		StructDef::new_static(PRIVATE_SENTINEL, Fields::Named(EMPTY_FIELDS))
 	}
 }
-
-/// Allows `Private<T>` to be used directly as a tracing field value.
-///
-/// Requires `tracing_unstable` because `Visit::record_value` is only
-/// available under that cfg.
-#[cfg(tracing_unstable)]
-impl<T: Valuable> tracing_core::field::Value for Private<T> {
-	fn record(
-		&self,
-		key: &tracing_core::field::Field,
-		visitor: &mut dyn tracing_core::field::Visit,
-	) {
-		visitor.record_value(key, self.as_value())
-	}
-}

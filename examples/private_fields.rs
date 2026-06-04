@@ -49,7 +49,7 @@ fn main() {
 	tracing::info!(
 		request_id = 99,
 		endpoint = "/api/login",
-		user = tracing_oslog::Private(&user),
+		user = tracing_oslog::Private(&user).as_value(),
 	);
 }
 
