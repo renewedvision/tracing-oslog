@@ -1,4 +1,4 @@
-//! Demonstrates logging with private fields using the `valuable` feature.
+//! Demonstrates logging with private fields.
 //!
 //! Private fields are redacted in Console.app by default (shown as `<private>`),
 //! but can be unlocked for debugging by adding an `OSLogPreferences` entry to
@@ -21,20 +21,26 @@
 //! Run with:
 //!
 //! ```sh
-//! RUSTFLAGS="--cfg tracing_unstable" cargo run --example private_fields --features valuable
+//! cargo run --example private_fields
 //! ```
 
-#[cfg(tracing_unstable)]
-fn main() {
-	use tracing_subscriber::prelude::*;
-	use valuable::Valuable;
+use std::fmt::Display;
 
-	#[derive(Debug, Valuable)]
-	struct UserInfo {
-		id: u64,
-		email: String,
+use tracing_subscriber::prelude::*;
+
+#[derive(Debug)]
+struct UserInfo {
+	id: u64,
+	email: String,
+}
+
+impl Display for UserInfo {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		write!(f, "user#{} <{}>", self.id, self.email)
 	}
+}
 
+fn main() {
 	let logger = tracing_oslog::OsLogger::new("com.example.myapp", "auth");
 	tracing_subscriber::registry().with(logger).init();
 
@@ -49,15 +55,7 @@ fn main() {
 	tracing::info!(
 		request_id = 99,
 		endpoint = "/api/login",
-		user = tracing_oslog::Private(&user).as_value(),
-	);
-}
-
-#[cfg(not(tracing_unstable))]
-fn main() {
-	eprintln!(
-		"This example requires the `tracing_unstable` cfg flag.\n\
-		 Re-run with:\n\
-		 RUSTFLAGS=\"--cfg tracing_unstable\" cargo run --example private_fields --features valuable"
+		user = ?tracing_oslog::Private(&user),
+		user_display = %tracing_oslog::Private(&user),
 	);
 }

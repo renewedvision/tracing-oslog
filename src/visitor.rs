@@ -1,6 +1,8 @@
 use std::{collections::BTreeMap, fmt::Debug};
 use tracing_core::field::{Field, Visit};
 
+use crate::private::PRIVATE_SENTINEL;
+
 #[derive(Default)]
 pub struct AttributeMap {
 	pub public: BTreeMap<String, String>,
@@ -50,40 +52,13 @@ impl<'a> Visit for FieldVisitor<'a> {
 	}
 
 	fn record_debug(&mut self, field: &Field, value: &dyn Debug) {
-		self.output
-			.public
-			.insert(field.name().to_string(), format!("{:?}", value));
-	}
-
-	#[cfg(all(tracing_unstable, feature = "valuable"))]
-	fn record_value(&mut self, field: &Field, value: valuable::Value<'_>) {
-		use crate::private::PRIVATE_SENTINEL;
-
-		let is_private = value
-			.as_structable()
-			.map(|s| s.definition().name() == PRIVATE_SENTINEL)
-			.unwrap_or(false);
-
-		if is_private {
-			// Capture the inner value by forwarding through Private::visit(),
-			// which calls visit_value(self.0.as_value()).
-			struct InnerCapture(Option<String>);
-			impl valuable::Visit for InnerCapture {
-				fn visit_value(&mut self, value: valuable::Value<'_>) {
-					self.0 = Some(format!("{:?}", value));
-				}
-			}
-			let mut capture = InnerCapture(None);
-			if let Some(s) = value.as_structable() {
-				s.visit(&mut capture);
-			}
+		let s = format!("{:?}", value);
+		if let Some(inner) = s.strip_prefix(PRIVATE_SENTINEL) {
 			self.output
 				.private
-				.insert(field.name().to_string(), capture.0.unwrap_or_default());
+				.insert(field.name().to_string(), inner.to_string());
 		} else {
-			self.output
-				.public
-				.insert(field.name().to_string(), format!("{:?}", value));
+			self.output.public.insert(field.name().to_string(), s);
 		}
 	}
 }

@@ -1,47 +1,41 @@
-use valuable::{Fields, StructDef, Structable, Valuable, Value};
+/// Sentinel prefix embedded by `Private`'s `Debug` and `Display` impls.
+/// The visitor strips this prefix to detect and route private field values.
+pub(crate) const PRIVATE_SENTINEL: &str = "[[tracing_oslog::private]]";
 
-pub(crate) const PRIVATE_SENTINEL: &str = "tracing_oslog::Private";
-
-static EMPTY_FIELDS: &[valuable::NamedField<'static>] = &[];
-
-/// Marks a [`Valuable`] field as private, causing it to be logged via oslog's
+/// Marks a field as private, causing it to be logged via oslog's
 /// `%{private}s` mechanism. Private fields are redacted in Console.app by
 /// default but can be unlocked by developers with a configuration profile or
 /// `Info.plist` entry.
 ///
-/// Requires the `valuable` crate feature and `RUSTFLAGS="--cfg tracing_unstable"`.
-///
-/// # Example
+/// Use the `?` sigil in tracing macros to format via [`Debug`](std::fmt::Debug):
 ///
 /// ```rust,ignore
-/// use valuable::Valuable;
-///
-/// #[derive(Debug, Valuable)]
+/// #[derive(Debug)]
 /// struct UserInfo { id: u64, email: String }
 ///
 /// let user = UserInfo { id: 42, email: "alice@example.com".into() };
 ///
 /// tracing::info!(
-///     request_id = 99,                        // public
-///     user = tracing_oslog::Private(&user),   // private — shows as <private>
+///     request_id = 99,                          // public
+///     user = ?tracing_oslog::Private(&user),    // private — shows as <private>
 /// );
 /// ```
-pub struct Private<T: Valuable>(pub T);
+///
+/// Or the `%` sigil for [`Display`](std::fmt::Display):
+///
+/// ```rust,ignore
+/// tracing::info!(user = %tracing_oslog::Private(&user));
+/// ```
+pub struct Private<T>(pub T);
 
-impl<T: Valuable> Valuable for Private<T> {
-	fn as_value(&self) -> Value<'_> {
-		Value::Structable(self)
-	}
-
-	fn visit(&self, visit: &mut dyn valuable::Visit) {
-		// Forward the inner value so our InnerCapture visitor can format it.
-		visit.visit_value(self.0.as_value())
+impl<T: std::fmt::Debug> std::fmt::Debug for Private<T> {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		write!(f, "{}{:?}", PRIVATE_SENTINEL, self.0)
 	}
 }
 
-impl<T: Valuable> Structable for Private<T> {
-	fn definition(&self) -> StructDef<'_> {
-		// Provides a placeholder while the inner value is formatted using the visitor.
-		StructDef::new_static(PRIVATE_SENTINEL, Fields::Named(EMPTY_FIELDS))
+impl<T: std::fmt::Display> std::fmt::Display for Private<T> {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		write!(f, "{}{}", PRIVATE_SENTINEL, self.0)
 	}
 }
