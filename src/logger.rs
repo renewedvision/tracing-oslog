@@ -146,19 +146,28 @@ where
 		let mut attr_visitor = FieldVisitor::new(&mut attributes);
 		event.record(&mut attr_visitor);
 		let mut message = String::new();
-		if let Some(value) = attributes.take_message() {
+		let mut message_is_private = false;
+		if let Some((value, is_private)) = attributes.take_message() {
 			message = value;
-			message.push_str("  ");
+			message_is_private = is_private;
+			if !is_private {
+				message.push_str("  ");
+			}
 		}
-		message.push_str(
-			&attributes
-				.iter_public()
-				.map(|(k, v)| format!("{}={}", k, v))
-				.collect::<Vec<_>>()
-				.join(" "),
-		);
+		if !message_is_private {
+			message.push_str(
+				&attributes
+					.iter_public()
+					.map(|(k, v)| format!("{}={}", k, v))
+					.collect::<Vec<_>>()
+					.join(" "),
+			);
+		}
 		message.retain(|c| c != '\0');
-		let private_message = {
+		let private_message = if message_is_private {
+			// The entire message is private — pass it directly with no k= prefix.
+			Some(CString::new(message.clone()).expect("failed to convert private message to a C string"))
+		} else {
 			let mut s = attributes
 				.iter_private()
 				.map(|(k, v)| format!("{}={}", k, v))
@@ -171,8 +180,12 @@ where
 				Some(CString::new(s).expect("failed to convert private message to a C string"))
 			}
 		};
-		let message =
-			CString::new(message).expect("failed to convert formatted message to a C string");
+		let public_message = if message_is_private {
+			// Public part is empty — wrapper.c will emit only the private portion.
+			CString::default()
+		} else {
+			CString::new(message).expect("failed to convert formatted message to a C string")
+		};
 		if let Some(parent_id) = ctx.current_span().id() {
 			let span = ctx
 				.span(parent_id)
@@ -191,11 +204,11 @@ where
 					wrapped_os_log_with_type_private(
 						self.logger,
 						level,
-						message.as_ptr(),
+						public_message.as_ptr(),
 						private.as_ptr(),
 					);
 				} else {
-					wrapped_os_log_with_type(self.logger, level, message.as_ptr());
+					wrapped_os_log_with_type(self.logger, level, public_message.as_ptr());
 				}
 				os_activity_scope_leave(state);
 			}
@@ -204,12 +217,12 @@ where
 				wrapped_os_log_with_type_private(
 					self.logger,
 					level,
-					message.as_ptr(),
+					public_message.as_ptr(),
 					private.as_ptr(),
 				)
 			};
 		} else {
-			unsafe { wrapped_os_log_with_type(self.logger, level, message.as_ptr()) };
+			unsafe { wrapped_os_log_with_type(self.logger, level, public_message.as_ptr()) };
 		}
 	}
 

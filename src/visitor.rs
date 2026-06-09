@@ -11,8 +11,18 @@ pub struct AttributeMap {
 
 impl AttributeMap {
 	/// Takes the message attribute, if available.
-	pub fn take_message(&mut self) -> Option<String> {
-		self.public.remove("message")
+	///
+	/// Returns `(value, is_private)`. When `is_private` is `true` the message
+	/// was wrapped in [`Private`](crate::Private) at the call site and should
+	/// be passed to OSLog's `%{private}s` formatter.
+	pub fn take_message(&mut self) -> Option<(String, bool)> {
+		if let Some(v) = self.public.remove("message") {
+			Some((v, false))
+		} else if let Some(v) = self.private.remove("message") {
+			Some((v, true))
+		} else {
+			None
+		}
 	}
 
 	/// Returns an iterator over public key-value pairs.
