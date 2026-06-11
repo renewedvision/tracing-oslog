@@ -145,6 +145,7 @@ where
 		let mut attributes = AttributeMap::default();
 		let mut attr_visitor = FieldVisitor::new(&mut attributes);
 		event.record(&mut attr_visitor);
+
 		let mut message = String::new();
 		let mut message_is_private = false;
 		if let Some((value, is_private)) = attributes.take_message() {
@@ -154,54 +155,40 @@ where
 				message.push_str("  ");
 			}
 		}
-		if !message_is_private {
-			message.push_str(
-				&attributes
-					.iter_public()
-					.map(|(k, v)| format!("{}={}", k, v))
-					.collect::<Vec<_>>()
-					.join(" "),
-			);
-		}
-		message.retain(|c| c != '\0');
-		let private_message = if message_is_private {
-			// The entire message is private — concatenate the message with all
-			// remaining attributes (private and public) so structured fields
-			// aren't lost.
-			let mut s = message.clone();
-			let attrs = attributes
-				.iter_private()
-				.chain(attributes.iter_public())
-				.map(|(k, v)| format!("{}={}", k, v))
-				.collect::<Vec<_>>()
-				.join(" ");
+
+		let (public_message, private_message) = if message_is_private {
+			// The entire message is private — concatenate it with all remaining
+			// attributes (private and public) so structured fields aren't lost.
+			let attrs =
+				format_attributes(attributes.iter_private().chain(attributes.iter_public()));
 			if !attrs.is_empty() {
-				if !s.is_empty() {
-					s.push(' ');
+				if !message.is_empty() {
+					message.push(' ');
 				}
-				s.push_str(&attrs);
+				message.push_str(&attrs);
 			}
-			s.retain(|c| c != '\0');
-			Some(CString::new(s).expect("failed to convert private message to a C string"))
-		} else {
-			let mut s = attributes
-				.iter_private()
-				.map(|(k, v)| format!("{}={}", k, v))
-				.collect::<Vec<_>>()
-				.join(" ");
-			if s.is_empty() {
-				None
-			} else {
-				s.retain(|c| c != '\0');
-				Some(CString::new(s).expect("failed to convert private message to a C string"))
-			}
-		};
-		let public_message = if message_is_private {
 			// Public part is empty — wrapper.c will emit only the private portion.
-			CString::default()
+			(CString::default(), Some(to_cstring(message)))
 		} else {
-			CString::new(message).expect("failed to convert formatted message to a C string")
+			message.push_str(&format_attributes(attributes.iter_public()));
+			let private = format_attributes(attributes.iter_private());
+			let private = (!private.is_empty()).then(|| to_cstring(private));
+			(to_cstring(message), private)
 		};
+
+		// Emit the log entry, optionally entering the current span's activity scope.
+		let emit = || unsafe {
+			match private_message {
+				Some(ref private) => wrapped_os_log_with_type_private(
+					self.logger,
+					level,
+					public_message.as_ptr(),
+					private.as_ptr(),
+				),
+				None => wrapped_os_log_with_type(self.logger, level, public_message.as_ptr()),
+			}
+		};
+
 		if let Some(parent_id) = ctx.current_span().id() {
 			let span = ctx
 				.span(parent_id)
@@ -216,29 +203,11 @@ where
 				let state: os_activity_scope_state_s = std::mem::transmute(raw_state);
 				let state: os_activity_scope_state_t = &state as *const _ as *mut _;
 				os_activity_scope_enter(**activity, state);
-				if let Some(ref private) = private_message {
-					wrapped_os_log_with_type_private(
-						self.logger,
-						level,
-						public_message.as_ptr(),
-						private.as_ptr(),
-					);
-				} else {
-					wrapped_os_log_with_type(self.logger, level, public_message.as_ptr());
-				}
+				emit();
 				os_activity_scope_leave(state);
 			}
-		} else if let Some(ref private) = private_message {
-			unsafe {
-				wrapped_os_log_with_type_private(
-					self.logger,
-					level,
-					public_message.as_ptr(),
-					private.as_ptr(),
-				)
-			};
 		} else {
-			unsafe { wrapped_os_log_with_type(self.logger, level, public_message.as_ptr()) };
+			emit();
 		}
 	}
 
@@ -261,6 +230,21 @@ impl Drop for OsLogger {
 			os_release(self.logger as *mut _);
 		}
 	}
+}
+
+/// Format an iterator of key-value attribute pairs as `k=v`, space-separated.
+fn format_attributes<'a>(attrs: impl Iterator<Item = (&'a str, &'a str)>) -> String {
+	attrs
+		.map(|(k, v)| format!("{}={}", k, v))
+		.collect::<Vec<_>>()
+		.join(" ")
+}
+
+/// Convert a `String` into a `CString`, stripping interior NUL bytes that would
+/// otherwise cause the conversion to fail.
+fn to_cstring(mut s: String) -> CString {
+	s.retain(|c| c != '\0');
+	CString::new(s).expect("failed to convert message to a C string")
 }
 
 /// Convert `tracing::Level` to an os_log-compatible level.
