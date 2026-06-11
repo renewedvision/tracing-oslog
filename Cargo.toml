@@ -17,6 +17,12 @@ tracing-subscriber = { version = "0.3", default-features = false, features = ["s
 cfg-if = "1.0"
 tracing-core = "0.1"
 
+[dev-dependencies]
+tracing = "0.1"
+
+[[example]]
+name = "private_fields"
+
 [build-dependencies]
 cc = "1.0"
 

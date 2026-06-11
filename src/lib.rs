@@ -5,6 +5,9 @@
 	clippy::style,
 	clippy::suspicious
 )]
+mod private;
+pub use private::Private;
+
 cfg_if::cfg_if! {
 	if #[cfg(target_vendor = "apple")] {
 		#[allow(
