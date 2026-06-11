@@ -165,8 +165,24 @@ where
 		}
 		message.retain(|c| c != '\0');
 		let private_message = if message_is_private {
-			// The entire message is private — pass it directly with no k= prefix.
-			Some(CString::new(message.clone()).expect("failed to convert private message to a C string"))
+			// The entire message is private — concatenate the message with all
+			// remaining attributes (private and public) so structured fields
+			// aren't lost.
+			let mut s = message.clone();
+			let attrs = attributes
+				.iter_private()
+				.chain(attributes.iter_public())
+				.map(|(k, v)| format!("{}={}", k, v))
+				.collect::<Vec<_>>()
+				.join(" ");
+			if !attrs.is_empty() {
+				if !s.is_empty() {
+					s.push(' ');
+				}
+				s.push_str(&attrs);
+			}
+			s.retain(|c| c != '\0');
+			Some(CString::new(s).expect("failed to convert private message to a C string"))
 		} else {
 			let mut s = attributes
 				.iter_private()
