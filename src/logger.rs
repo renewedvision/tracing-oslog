@@ -15,7 +15,10 @@ use std::{
 	ffi::CString,
 	ops::Deref,
 	ptr::addr_of_mut,
-	sync::{Mutex, OnceLock},
+	sync::{
+		atomic::{AtomicU64, Ordering},
+		Mutex, OnceLock,
+	},
 };
 use tracing_core::{
 	span::{Attributes, Id},
@@ -27,6 +30,12 @@ use tracing_subscriber::{
 };
 
 static NAMES: OnceLock<Mutex<HashMap<String, CString>>> = OnceLock::new();
+static NEXT_CHUNKED_EVENT_ID: AtomicU64 = AtomicU64::new(1);
+
+// Keep dynamic string data comfortably below unified logging's approximately 1 KiB per-entry
+// payload limit. Chunk markers consume the remaining budget.
+const OS_LOG_DYNAMIC_PAYLOAD_BUDGET: usize = 768;
+const OS_LOG_CHUNK_CONTENT_BYTES: usize = 640;
 
 struct Activity(os_activity_t);
 // lol
@@ -168,26 +177,16 @@ where
 				message.push_str(&attrs);
 			}
 			// Public part is empty — wrapper.c will emit only the private portion.
-			(CString::default(), Some(to_cstring(message)))
+			(String::new(), Some(message))
 		} else {
 			message.push_str(&format_attributes(attributes.iter_public()));
 			let private = format_attributes(attributes.iter_private());
-			let private = (!private.is_empty()).then(|| to_cstring(private));
-			(to_cstring(message), private)
+			let private = (!private.is_empty()).then_some(private);
+			(message, private)
 		};
 
 		// Emit the log entry, optionally entering the current span's activity scope.
-		let emit = || unsafe {
-			match private_message {
-				Some(ref private) => wrapped_os_log_with_type_private(
-					self.logger,
-					level,
-					public_message.as_ptr(),
-					private.as_ptr(),
-				),
-				None => wrapped_os_log_with_type(self.logger, level, public_message.as_ptr()),
-			}
-		};
+		let emit = || emit_message(self.logger, level, public_message, private_message);
 
 		if let Some(parent_id) = ctx.current_span().id() {
 			let span = ctx
@@ -238,6 +237,145 @@ fn format_attributes<'a>(attrs: impl Iterator<Item = (&'a str, &'a str)>) -> Str
 		.map(|(k, v)| format!("{}={}", k, v))
 		.collect::<Vec<_>>()
 		.join(" ")
+}
+
+fn emit_message(
+	logger: os_log_t,
+	level: os_log_type_t,
+	public_message: String,
+	private_message: Option<String>,
+) {
+	let event_id = NEXT_CHUNKED_EVENT_ID.fetch_add(1, Ordering::Relaxed);
+	for message in plan_messages(public_message, private_message, event_id) {
+		match message {
+			PlannedMessage::Plain { public, private } => {
+				let public = to_cstring(public);
+				let private = private.map(to_cstring);
+				unsafe {
+					match private {
+						Some(ref private) => wrapped_os_log_with_type_private(
+							logger,
+							level,
+							public.as_ptr(),
+							private.as_ptr(),
+						),
+						None => wrapped_os_log_with_type(logger, level, public.as_ptr()),
+					}
+				}
+			}
+			PlannedMessage::Chunk {
+				marker,
+				content,
+				is_private,
+			} => {
+				if is_private {
+					let marker = to_cstring(marker);
+					let content = to_cstring(content);
+					unsafe {
+						wrapped_os_log_with_type_private(
+							logger,
+							level,
+							marker.as_ptr(),
+							content.as_ptr(),
+						)
+					};
+				} else {
+					let message = to_cstring(format!("{marker} {content}"));
+					unsafe { wrapped_os_log_with_type(logger, level, message.as_ptr()) };
+				}
+			}
+		}
+	}
+}
+
+#[derive(Debug, PartialEq)]
+enum PlannedMessage {
+	Plain {
+		public: String,
+		private: Option<String>,
+	},
+	Chunk {
+		marker: String,
+		content: String,
+		is_private: bool,
+	},
+}
+
+fn plan_messages(
+	mut public_message: String,
+	mut private_message: Option<String>,
+	event_id: u64,
+) -> Vec<PlannedMessage> {
+	strip_nuls(&mut public_message);
+	if let Some(private) = &mut private_message {
+		strip_nuls(private);
+	}
+
+	let dynamic_bytes =
+		public_message.len() + private_message.as_ref().map_or(0, |private| private.len());
+	if dynamic_bytes <= OS_LOG_DYNAMIC_PAYLOAD_BUDGET {
+		return vec![PlannedMessage::Plain {
+			public: public_message,
+			private: private_message,
+		}];
+	}
+
+	let mut planned = Vec::new();
+	let public_chunks = utf8_chunks(&public_message, OS_LOG_CHUNK_CONTENT_BYTES);
+	for (index, chunk) in public_chunks.iter().enumerate() {
+		planned.push(PlannedMessage::Chunk {
+			marker: format!(
+				"[oslog chunk id={event_id} public {}/{}]",
+				index + 1,
+				public_chunks.len()
+			),
+			content: (*chunk).to_owned(),
+			is_private: false,
+		});
+	}
+
+	if let Some(private_message) = private_message {
+		let private_chunks = utf8_chunks(&private_message, OS_LOG_CHUNK_CONTENT_BYTES);
+		for (index, chunk) in private_chunks.iter().enumerate() {
+			planned.push(PlannedMessage::Chunk {
+				marker: format!(
+					"[oslog chunk id={event_id} private {}/{}]",
+					index + 1,
+					private_chunks.len()
+				),
+				content: (*chunk).to_owned(),
+				is_private: true,
+			});
+		}
+	}
+
+	planned
+}
+
+fn strip_nuls(value: &mut String) {
+	value.retain(|character| character != '\0');
+}
+
+fn utf8_chunks(value: &str, maximum_bytes: usize) -> Vec<&str> {
+	assert!(maximum_bytes >= 4, "chunk size must fit any UTF-8 scalar");
+	if value.is_empty() {
+		return Vec::new();
+	}
+
+	let mut chunks = Vec::new();
+	let mut start = 0;
+	let mut bytes = 0;
+	for (index, character) in value.char_indices() {
+		let character_bytes = character.len_utf8();
+		if bytes != 0 && bytes + character_bytes > maximum_bytes {
+			chunks.push(&value[start..index]);
+			start = index;
+			bytes = 0;
+		}
+		bytes += character_bytes;
+	}
+	chunks.push(&value[start..]);
+	chunks
 }
 
 /// Convert a `String` into a `CString`, stripping interior NUL bytes that would
@@ -300,5 +438,84 @@ fn tracing_level_to_oslog_level(level: Level) -> os_log_type_t {
 		// This logging level also makes the log entry red in Console.app /
 		// Xcode, which is what a user would expect of a `Level::ERROR` entry.
 		Level::ERROR => os_log_type_t_OS_LOG_TYPE_FAULT,
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn utf8_chunks_reassemble_without_splitting_scalars() {
+		let message = "alpha🙂beta🙂gamma";
+		let chunks = utf8_chunks(message, 9);
+
+		assert_eq!(chunks.concat(), message);
+		assert!(chunks.iter().all(|chunk| chunk.len() <= 9));
+	}
+
+	#[test]
+	fn utf8_chunks_keep_exact_boundary_in_one_chunk() {
+		let message = "a".repeat(OS_LOG_CHUNK_CONTENT_BYTES);
+
+		assert_eq!(
+			utf8_chunks(&message, OS_LOG_CHUNK_CONTENT_BYTES),
+			[message.as_str()]
+		);
+	}
+
+	#[test]
+	fn utf8_chunks_return_no_chunks_for_empty_message() {
+		assert!(utf8_chunks("", OS_LOG_CHUNK_CONTENT_BYTES).is_empty());
+	}
+
+	#[test]
+	fn planned_chunks_preserve_public_and_private_payloads() {
+		let public = "public🙂".repeat(200);
+		let private = "private🔒".repeat(200);
+		let planned = plan_messages(public.clone(), Some(private.clone()), 42);
+
+		let reconstructed_public = planned
+			.iter()
+			.filter_map(|message| match message {
+				PlannedMessage::Chunk {
+					content,
+					is_private: false,
+					..
+				} => Some(content.as_str()),
+				_ => None,
+			})
+			.collect::<String>();
+		let reconstructed_private = planned
+			.iter()
+			.filter_map(|message| match message {
+				PlannedMessage::Chunk {
+					content,
+					is_private: true,
+					..
+				} => Some(content.as_str()),
+				_ => None,
+			})
+			.collect::<String>();
+
+		assert_eq!(reconstructed_public, public);
+		assert_eq!(reconstructed_private, private);
+		assert!(planned.iter().all(|message| match message {
+			PlannedMessage::Chunk {
+				marker, content, ..
+			} => marker.contains("id=42") && content.len() <= OS_LOG_CHUNK_CONTENT_BYTES,
+			PlannedMessage::Plain { .. } => false,
+		}));
+	}
+
+	#[test]
+	fn short_message_keeps_public_and_private_fields_in_one_entry() {
+		assert_eq!(
+			plan_messages("public".to_owned(), Some("private".to_owned()), 42),
+			[PlannedMessage::Plain {
+				public: "public".to_owned(),
+				private: Some("private".to_owned()),
+			}]
+		);
 	}
 }
