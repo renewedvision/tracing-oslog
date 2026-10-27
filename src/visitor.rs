@@ -18,10 +18,8 @@ impl AttributeMap {
 	pub fn take_message(&mut self) -> Option<(String, bool)> {
 		if let Some(v) = self.public.remove("message") {
 			Some((v, false))
-		} else if let Some(v) = self.private.remove("message") {
-			Some((v, true))
 		} else {
-			None
+			self.private.remove("message").map(|v| (v, true))
 		}
 	}
 
