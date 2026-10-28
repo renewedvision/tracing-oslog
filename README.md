@@ -2,7 +2,9 @@
 
 This is a [tracing](https://crates.io/crates/tracing) layer for the [Apple OS logging framework](https://developer.apple.com/documentation/os/logging).
 
-[Activities](https://developer.apple.com/documentation/os/logging/collecting_log_messages_in_activities) are used to handle spans,
+[Activities](https://developer.apple.com/documentation/os/logging/collecting_log_messages_in_activities) are used to handle spans.
+
+Each span creates one activity, which is one record in the unified log. For span-dense code, use `OsLogger::new(..).with_activities(false)` to ignore spans in this layer and log only events.
 
 ## Example
 
